@@ -5,7 +5,8 @@ import {
   formatImageForProvider,
   filterByAudience,
 } from '../src/multimodal.js';
-import type { PendingImage, AiProvider, ContentAnnotations } from '../../shared/types.js';
+import type { AiProvider, ContentAnnotations } from '../../shared/types.js';
+import type { PendingImage } from '../src/types.js';
 
 describe('Multimodal', () => {
   describe('shouldSendImagesToModel', () => {

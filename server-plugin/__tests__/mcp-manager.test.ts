@@ -5,6 +5,7 @@ import type {
   McpToolDefinition,
   McpResource,
   McpPrompt,
+  McpToolResult,
 } from '../../shared/types.js';
 
 // ============================================================
@@ -34,7 +35,7 @@ function createMockSdkClient(opts?: {
     callTool: vi.fn(async (_params: { name: string; arguments?: Record<string, unknown> }) => ({
       content: [{ type: 'text' as const, text: 'mock result' }],
       isError: false,
-    })),
+    } satisfies McpToolResult) as any),
     readResource: vi.fn(async (_params: { uri: string }) => ({
       contents: [{ uri: 'test://file', text: 'content' }],
     })),

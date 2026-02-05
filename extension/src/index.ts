@@ -27,6 +27,11 @@ declare const SillyTavern: {
     };
     mainApi: string;
     getRequestHeaders(): Record<string, string>;
+    sendSystemMessage(type: string, text?: string, extra?: Record<string, unknown>): void;
+    chat: Array<{ mes: string; is_user: boolean; is_system: boolean; name: string; extra?: Record<PropertyKey, any> }>;
+    symbols?: {
+      ignore?: symbol;
+    };
     registerFunctionTool(opts: any): void;
     unregisterFunctionTool(name: string): void;
     ToolManager: any;
@@ -38,7 +43,65 @@ declare const SillyTavern: {
 // ============================================================
 
 let bridge: ToolBridge | null = null;
-let sendImages = true; // Default: send images to model
+let sendImages = false; // Default: DO NOT send images to model (compat-friendly)
+
+function restoreUiOnlyIgnores(ctx: ReturnType<typeof SillyTavern.getContext>): void {
+  const ignore = ctx.symbols?.ignore;
+  if (!ignore) return;
+  for (const m of ctx.chat ?? []) {
+    if (m?.extra?.mcp_client_ui_only) {
+      m.extra[ignore] = true;
+    }
+  }
+}
+
+async function uploadBase64ImageToSt(base64: string, mimeType: string): Promise<string> {
+  const ext = (mimeType.split('/')[1] || 'png').toLowerCase();
+  const filename = `mcp_${Date.now()}`;
+  const resp = await fetch('/api/images/upload', {
+    method: 'POST',
+    headers: getJsonHeaders(),
+    body: JSON.stringify({
+      image: base64,
+      format: ext,
+      ch_name: 'mcp-client',
+      filename,
+    }),
+  });
+  const data = await resp.json().catch(() => ({} as any));
+  if (!resp.ok) {
+    throw new Error(data?.error || `${resp.status} ${resp.statusText}`);
+  }
+  return data.path as string;
+}
+
+async function renderToolImageToUi(payload: { serverId: string; toolName: string; data: string; mimeType: string }): Promise<void> {
+  const ctx = SillyTavern.getContext();
+  const ignore = ctx.symbols?.ignore;
+
+  const url = await uploadBase64ImageToSt(payload.data, payload.mimeType);
+
+  const extra: Record<PropertyKey, any> = {
+    isSmallSys: true,
+    inline_image: true,
+    media: [
+      {
+        type: 'image',
+        url,
+        title: `${payload.serverId}/${payload.toolName}`,
+        source: 'generated',
+      },
+    ],
+    // Persisted marker (symbol cannot be serialized)
+    mcp_client_ui_only: true,
+  };
+
+  if (ignore) {
+    extra[ignore] = true;
+  }
+
+  ctx.sendSystemMessage('generic', '', extra);
+}
 
 function getJsonHeaders(): Record<string, string> {
   const ctx = SillyTavern?.getContext?.();
@@ -77,6 +140,9 @@ async function probeBackend(): Promise<boolean> {
 async function initExtension() {
   const ctx = SillyTavern.getContext();
 
+  // Ensure UI-only messages are always excluded from generation.
+  restoreUiOnlyIgnores(ctx);
+
   // 1. Check backend availability
   const backendAvailable = await probeBackend();
   if (!backendAvailable) {
@@ -98,7 +164,9 @@ async function initExtension() {
     return fetch(url, { ...opts, headers });
   };
 
-  bridge = new ToolBridge(toolManager, fetcher);
+  bridge = new ToolBridge(toolManager, fetcher, {
+    onUiImage: (img) => renderToolImageToUi(img),
+  });
 
   // 3. Sync tools initially
   try {

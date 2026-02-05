@@ -8,7 +8,7 @@
  */
 
 import { spawn, type ChildProcess } from 'child_process';
-import type { StdioTransportConfig } from '../../types.js';
+import type { StdioTransportConfig } from '../types.js';
 
 export type MessageHandler = (message: unknown) => void;
 export type ErrorHandler = (error: Error) => void;

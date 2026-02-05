@@ -34,6 +34,13 @@ export interface IToolManager {
 
 export type Fetcher = (url: string, opts?: RequestInit) => Promise<Response>;
 
+export type UiImageHandler = (payload: {
+  serverId: string;
+  toolName: string;
+  data: string;
+  mimeType: string;
+}) => void | Promise<void>;
+
 // ============================================================
 // ToolBridge
 // ============================================================
@@ -43,12 +50,14 @@ export class ToolBridge {
   private _fetcher: Fetcher;
   private _registeredNames = new Set<string>();
   private _pendingImages: PendingImage[] = [];
+  private _onUiImage?: UiImageHandler;
   /** Maps registered ST tool name → { serverId, toolName } for call routing. */
   private _toolMap = new Map<string, { serverId: string; toolName: string }>();
 
-  constructor(toolManager: IToolManager, fetcher: Fetcher) {
+  constructor(toolManager: IToolManager, fetcher: Fetcher, opts?: { onUiImage?: UiImageHandler }) {
     this._toolManager = toolManager;
     this._fetcher = fetcher;
+    this._onUiImage = opts?.onUiImage;
   }
 
   /** Testing helper to swap fetcher. */
@@ -147,7 +156,7 @@ export class ToolBridge {
     });
     const result = await resp.json() as ToolCallResponse;
 
-    return this._processToolResult(result.content ?? []);
+    return this._processToolResult({ serverId, toolName }, result.content ?? []);
   }
 
   /**
@@ -155,7 +164,10 @@ export class ToolBridge {
    * - Text: collected as-is
    * - Image/Audio: replaced with placeholder, data stored for injection
    */
-  private _processToolResult(content: ToolResultContent[]): string {
+  private _processToolResult(
+    ctx: { serverId: string; toolName: string },
+    content: ToolResultContent[],
+  ): string {
     const textParts: string[] = [];
 
     for (const item of content) {
@@ -170,6 +182,24 @@ export class ToolBridge {
             data: img.data,
             mimeType: img.mimeType,
           });
+
+          // UI render is best-effort and should not block tool execution.
+          // Respect MCP audience annotations if present.
+          const audience = img.annotations?.audience;
+          const shouldShow = !Array.isArray(audience) || audience.length === 0 || audience.includes('user');
+          if (shouldShow && this._onUiImage) {
+            void Promise.resolve(
+              this._onUiImage({
+                serverId: ctx.serverId,
+                toolName: ctx.toolName,
+                data: img.data,
+                mimeType: img.mimeType,
+              }),
+            ).catch((err) => {
+              console.warn('[MCP Client] Failed to render image in UI:', err);
+            });
+          }
+
           textParts.push(`[Image: ${img.mimeType}, delivered to user]`);
           break;
         }

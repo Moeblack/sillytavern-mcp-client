@@ -23,7 +23,7 @@ export function createServerRoutes(manager: McpManager): ServerRouteHandlers {
     },
 
     async add(req, res) {
-      const config = req.body as McpServerConfig;
+      const config = req.body as unknown as McpServerConfig;
       if (!config.id || !config.name || !config.transport) {
         res.status(400).json({ error: 'id, name, and transport are required' });
         return;

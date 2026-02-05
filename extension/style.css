@@ -1,0 +1,58 @@
+/* MCP Client Extension Styles */
+
+.mcp-client-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mcp-status {
+  opacity: 0.9;
+  font-size: 0.95em;
+}
+
+.mcp-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mcp-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mcp-tool-list {
+  margin-top: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.mcp-tool-item {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--SmartThemeBorderColor);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mcp-tool-item code {
+  font-size: 0.9em;
+}
+
+.mcp-tool-desc {
+  font-size: 0.85em;
+  opacity: 0.75;
+}
+
+.mcp-muted {
+  opacity: 0.6;
+  font-size: 0.8em;
+}
+
+.mcp-empty {
+  padding: 12px;
+  text-align: center;
+  opacity: 0.6;
+}

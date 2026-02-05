@@ -1,0 +1,7 @@
+node_modules/
+dist/
+server-plugin/dist/
+extension/dist/
+*.tsbuildinfo
+.vitest/
+coverage/

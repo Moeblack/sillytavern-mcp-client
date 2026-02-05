@@ -1,8 +1,10 @@
 /**
  * MCP Connection Manager.
- * Manages connections to multiple MCP servers and aggregates their capabilities.
+ * Manages connections to multiple MCP servers using the official MCP SDK.
  */
 
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type {
   McpServerConfig,
   McpServerState,
@@ -18,7 +20,7 @@ import type {
 } from './types.js';
 
 // ============================================================
-// Types for the MCP SDK client abstraction
+// Types
 // ============================================================
 
 /** Minimal interface matching the MCP SDK Client methods we use. */
@@ -39,7 +41,7 @@ export interface IMcpClient {
     messages: McpPromptMessage[];
     description?: string;
   }>;
-  setNotificationHandler(method: string, handler: (...args: unknown[]) => void): void;
+  setNotificationHandler?(method: string, handler: (...args: unknown[]) => void): void;
 }
 
 export type ClientFactory = (config: McpServerConfig) => IMcpClient;
@@ -53,6 +55,7 @@ interface ServerEntry {
   status: ConnectionStatus;
   error?: string;
   client?: IMcpClient;
+  transport?: StdioClientTransport;
   capabilities?: ServerCapabilities;
   tools: McpToolDefinition[];
   resources: McpResource[];
@@ -67,9 +70,7 @@ export class McpManager {
   private _servers = new Map<string, ServerEntry>();
   private _clientFactory: ClientFactory | null = null;
 
-  // ---- Testing helper ----
-
-  /** Inject a mock client factory for testing. */
+  /** Inject a mock/custom client factory (for testing or custom transports). */
   _setClientFactory(factory: ClientFactory): void {
     this._clientFactory = factory;
   }
@@ -116,20 +117,29 @@ export class McpManager {
     entry.error = undefined;
 
     try {
-      const client = this._createClient(entry.config);
-      entry.client = client;
+      if (this._clientFactory) {
+        // Use injected factory (tests or custom)
+        const client = this._clientFactory(entry.config);
+        entry.client = client;
+        await client.connect(entry.config.transport);
+      } else {
+        // Use real MCP SDK
+        const { client, transport } = this._createRealClient(entry.config);
+        entry.client = client as unknown as IMcpClient;
+        entry.transport = transport;
+        await client.connect(transport);
+      }
 
-      await client.connect(entry.config.transport);
-
-      entry.capabilities = client.getServerCapabilities() ?? {};
+      entry.capabilities = entry.client.getServerCapabilities() ?? {};
       entry.status = 'connected';
 
-      // Fetch initial tool/resource/prompt lists
+      // Fetch initial lists
       await this._refreshLists(entry);
     } catch (err) {
       entry.status = 'error';
       entry.error = err instanceof Error ? err.message : String(err);
       entry.client = undefined;
+      entry.transport = undefined;
     }
   }
 
@@ -138,15 +148,12 @@ export class McpManager {
     if (!entry) return;
 
     if (entry.client) {
-      try {
-        await entry.client.close();
-      } catch {
-        // Best-effort
-      }
+      try { await entry.client.close(); } catch { /* best-effort */ }
     }
 
     entry.status = 'disconnected';
     entry.client = undefined;
+    entry.transport = undefined;
     entry.tools = [];
     entry.resources = [];
     entry.prompts = [];
@@ -195,7 +202,7 @@ export class McpManager {
     return result;
   }
 
-  // ---- Tool/Resource/Prompt operations ----
+  // ---- Operations ----
 
   async callTool(
     serverId: string,
@@ -213,7 +220,7 @@ export class McpManager {
     });
 
     return {
-      content: result.content,
+      content: result.content as ToolResultContent[],
       structuredContent: result.structuredContent,
       isError: result.isError,
     };
@@ -225,7 +232,7 @@ export class McpManager {
       throw new Error(`Server '${serverId}' not connected`);
     }
     const result = await entry.client.readResource({ uri });
-    return result.contents;
+    return result.contents as McpResourceContent[];
   }
 
   async getPrompt(
@@ -237,42 +244,54 @@ export class McpManager {
     if (!entry?.client || entry.status !== 'connected') {
       throw new Error(`Server '${serverId}' not connected`);
     }
-    return entry.client.getPrompt({ name: promptName, arguments: args });
+    return entry.client.getPrompt({ name: promptName, arguments: args }) as any;
+  }
+
+  // ---- Real MCP SDK Client creation ----
+
+  private _createRealClient(config: McpServerConfig) {
+    const client = new Client(
+      { name: 'sillytavern-mcp-client', version: '0.1.0' },
+      { capabilities: { roots: { listChanged: true } } },
+    );
+
+    let transport: StdioClientTransport;
+
+    if (config.transport.type === 'stdio') {
+      transport = new StdioClientTransport({
+        command: config.transport.command,
+        args: config.transport.args,
+        env: config.transport.env,
+        cwd: config.transport.cwd,
+        stderr: 'pipe',
+      });
+    } else {
+      // TODO: StreamableHTTP transport
+      throw new Error(`Transport type '${config.transport.type}' not yet supported. Use 'stdio'.`);
+    }
+
+    return { client, transport };
   }
 
   // ---- Internal ----
-
-  private _createClient(config: McpServerConfig): IMcpClient {
-    if (this._clientFactory) {
-      return this._clientFactory(config);
-    }
-    // Real implementation will use @modelcontextprotocol/sdk Client
-    throw new Error('No client factory configured. Set one via _setClientFactory() or use the real SDK.');
-  }
 
   private async _refreshLists(entry: ServerEntry): Promise<void> {
     if (!entry.client) return;
 
     try {
       const toolsResult = await entry.client.listTools();
-      entry.tools = toolsResult.tools;
-    } catch {
-      entry.tools = [];
-    }
+      entry.tools = toolsResult.tools as McpToolDefinition[];
+    } catch { entry.tools = []; }
 
     try {
       const resourcesResult = await entry.client.listResources();
-      entry.resources = resourcesResult.resources;
-    } catch {
-      entry.resources = [];
-    }
+      entry.resources = resourcesResult.resources as McpResource[];
+    } catch { entry.resources = []; }
 
     try {
       const promptsResult = await entry.client.listPrompts();
-      entry.prompts = promptsResult.prompts;
-    } catch {
-      entry.prompts = [];
-    }
+      entry.prompts = promptsResult.prompts as McpPrompt[];
+    } catch { entry.prompts = []; }
   }
 
   private _toState(entry: ServerEntry): McpServerState {

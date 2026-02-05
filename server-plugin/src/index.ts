@@ -12,6 +12,8 @@ import { createServerRoutes } from './routes/servers.js';
 import { createConfigRoutes } from './routes/config.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fs from 'fs/promises';
+import type { McpClientConfig, McpServerConfig } from './types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -24,7 +26,42 @@ export const info = {
 const manager = new McpManager();
 const configPath = path.join(__dirname, '..', 'mcp-servers.json');
 
+async function loadServersFromConfig(): Promise<void> {
+  try {
+    const raw = await fs.readFile(configPath, 'utf-8');
+    const cfg = JSON.parse(raw) as McpClientConfig;
+    const servers = Array.isArray(cfg?.servers) ? cfg.servers : [];
+
+    for (const server of servers) {
+      const s = server as McpServerConfig;
+      if (s?.enabled === false) continue;
+      try {
+        manager.addServer(s);
+      } catch {
+        // ignore duplicates
+      }
+    }
+
+    // Auto-connect enabled servers
+    const toConnect = servers
+      .filter((s) => (s as McpServerConfig)?.enabled !== false)
+      .filter((s) => (s as McpServerConfig)?.autoConnect)
+      .map((s) => (s as McpServerConfig).id)
+      .filter(Boolean);
+
+    for (const id of toConnect) {
+      // best-effort: don't block init if a server fails
+      manager.connect(id).catch(() => {});
+    }
+  } catch {
+    // no config yet
+  }
+}
+
 export async function init(router: Router): Promise<void> {
+  // Load persistent server list (best-effort)
+  await loadServersFromConfig();
+
   const toolRoutes = createToolRoutes(manager);
   const resourceRoutes = createResourceRoutes(manager);
   const promptRoutes = createPromptRoutes(manager);

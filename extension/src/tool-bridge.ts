@@ -6,6 +6,7 @@
  * - Registers/unregisters tools with ST ToolManager
  * - On tool invocation, calls backend and processes multimodal results
  * - Stores pending images for prompt injection by the multimodal handler
+ * - Stores pending media attachments for injection into tool invocation messages
  */
 
 import type {
@@ -34,12 +35,25 @@ export interface IToolManager {
 
 export type Fetcher = (url: string, opts?: RequestInit) => Promise<Response>;
 
-export type UiImageHandler = (payload: {
+/**
+ * Handler for uploading tool-generated images.
+ * Receives base64 image data, uploads it to the server,
+ * and returns the persisted URL for attachment to messages.
+ */
+export type ImageUploadHandler = (payload: {
   serverId: string;
   toolName: string;
   data: string;
   mimeType: string;
-}) => void | Promise<void>;
+}) => Promise<string>;
+
+/** Media attachment to be injected into a chat message's extra.media array. */
+export interface MediaAttachment {
+  type: string;
+  url: string;
+  title: string;
+  source: string;
+}
 
 // ============================================================
 // ToolBridge
@@ -49,15 +63,18 @@ export class ToolBridge {
   private _toolManager: IToolManager;
   private _fetcher: Fetcher;
   private _registeredNames = new Set<string>();
+  /** Base64 image data pending injection into the AI prompt (multimodal). */
   private _pendingImages: PendingImage[] = [];
-  private _onUiImage?: UiImageHandler;
+  /** Uploaded media URLs pending attachment to the tool invocation message. */
+  private _pendingMediaAttachments: MediaAttachment[] = [];
+  private _onImageUpload?: ImageUploadHandler;
   /** Maps registered ST tool name → { serverId, toolName } for call routing. */
   private _toolMap = new Map<string, { serverId: string; toolName: string }>();
 
-  constructor(toolManager: IToolManager, fetcher: Fetcher, opts?: { onUiImage?: UiImageHandler }) {
+  constructor(toolManager: IToolManager, fetcher: Fetcher, opts?: { onImageUpload?: ImageUploadHandler }) {
     this._toolManager = toolManager;
     this._fetcher = fetcher;
-    this._onUiImage = opts?.onUiImage;
+    this._onImageUpload = opts?.onImageUpload;
   }
 
   /** Testing helper to swap fetcher. */
@@ -104,7 +121,7 @@ export class ToolBridge {
     this._toolMap = newToolMap;
   }
 
-  // ---- Pending images ----
+  // ---- Pending images (for multimodal prompt injection) ----
 
   getPendingImages(): PendingImage[] {
     return [...this._pendingImages];
@@ -112,6 +129,16 @@ export class ToolBridge {
 
   clearPendingImages(): void {
     this._pendingImages = [];
+  }
+
+  // ---- Pending media attachments (for tool invocation message) ----
+
+  getPendingMediaAttachments(): MediaAttachment[] {
+    return [...this._pendingMediaAttachments];
+  }
+
+  clearPendingMediaAttachments(): void {
+    this._pendingMediaAttachments = [];
   }
 
   // ---- Internal ----
@@ -142,7 +169,8 @@ export class ToolBridge {
   /**
    * Called when ST invokes the tool. Calls backend, processes multimodal result.
    * Returns a string for ST's ToolManager (text + image placeholders).
-   * Stores image data in pendingImages for later prompt injection.
+   * Stores image data in pendingImages for later prompt injection,
+   * and uploaded URLs in pendingMediaAttachments for message attachment.
    */
   private async _invokeToolAction(
     serverId: string,
@@ -162,11 +190,11 @@ export class ToolBridge {
   /**
    * Processes MCP tool result content array.
    * - Text: collected as-is
-   * - Image/Audio: replaced with placeholder, data stored for injection
+   * - Image: uploaded to server, URL stored for message attachment,
+   *          base64 data stored for multimodal prompt injection
+   * - Audio: placeholder text only (for now)
    *
-   * Image UI rendering is awaited sequentially so that each image is
-   * persisted to the chat file before processing the next one, avoiding
-   * race conditions with concurrent sendSystemMessage + saveChat calls.
+   * Images are processed sequentially to ensure deterministic ordering.
    */
   private async _processToolResult(
     ctx: { serverId: string; toolName: string },
@@ -181,25 +209,34 @@ export class ToolBridge {
           break;
         case 'image': {
           const img = item as ImageContent;
+
+          // Store base64 data for multimodal prompt injection
           this._pendingImages.push({
-            toolCallId: '', // Will be set during prompt injection
+            toolCallId: '',
             data: img.data,
             mimeType: img.mimeType,
           });
 
+          // Upload image and store URL for message attachment.
           // Respect MCP audience annotations if present.
           const audience = img.annotations?.audience;
           const shouldShow = !Array.isArray(audience) || audience.length === 0 || audience.includes('user');
-          if (shouldShow && this._onUiImage) {
+          if (shouldShow && this._onImageUpload) {
             try {
-              await this._onUiImage({
+              const url = await this._onImageUpload({
                 serverId: ctx.serverId,
                 toolName: ctx.toolName,
                 data: img.data,
                 mimeType: img.mimeType,
               });
+              this._pendingMediaAttachments.push({
+                type: 'image',
+                url,
+                title: `${ctx.serverId}/${ctx.toolName}`,
+                source: 'generated',
+              });
             } catch (err) {
-              console.warn('[MCP Client] Failed to render image in UI:', err);
+              console.warn('[MCP Client] Failed to upload image:', err);
             }
           }
 

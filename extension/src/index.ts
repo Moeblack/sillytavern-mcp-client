@@ -4,8 +4,9 @@
  * Responsibilities:
  * 1. Probe backend plugin availability
  * 2. Register MCP tools with ST ToolManager
- * 3. Hook CHAT_COMPLETION_PROMPT_READY for multimodal image injection
- * 4. Register settings panel UI
+ * 3. Hook TOOL_CALLS_PERFORMED to attach images to tool invocation messages
+ * 4. Hook CHAT_COMPLETION_PROMPT_READY for multimodal image injection
+ * 5. Register settings panel UI
  */
 
 import { ToolBridge } from './tool-bridge.js';
@@ -24,11 +25,10 @@ declare const SillyTavern: {
     event_types: {
       APP_READY: string;
       CHAT_COMPLETION_PROMPT_READY: string;
+      TOOL_CALLS_PERFORMED: string;
     };
     mainApi: string;
     getRequestHeaders(): Record<string, string>;
-    sendSystemMessage(type: string, text?: string, extra?: Record<string, unknown>): void;
-    saveChat(): Promise<void>;
     chat: Array<{ mes: string; is_user: boolean; is_system: boolean; name: string; extra?: Record<PropertyKey, any> }>;
     symbols?: {
       ignore?: symbol;
@@ -46,6 +46,11 @@ declare const SillyTavern: {
 let bridge: ToolBridge | null = null;
 let sendImages = false; // Default: DO NOT send images to model (compat-friendly)
 
+/**
+ * Backward compatibility: mark old-style standalone image messages
+ * (created by previous versions) as ignored so they don't pollute
+ * the generation prompt.
+ */
 function restoreUiOnlyIgnores(ctx: ReturnType<typeof SillyTavern.getContext>): void {
   const ignore = ctx.symbols?.ignore;
   if (!ignore) return;
@@ -56,18 +61,16 @@ function restoreUiOnlyIgnores(ctx: ReturnType<typeof SillyTavern.getContext>): v
   }
 }
 
-declare global {
-  interface Window {
-    mcpClientRegenerate?: (btn: any) => void;
-  }
-}
-
 function generateUniqueId(): string {
   return typeof crypto !== 'undefined' && crypto.randomUUID
     ? crypto.randomUUID()
     : Math.random().toString(36).substring(2);
 }
 
+/**
+ * Uploads a base64-encoded image to the SillyTavern server.
+ * Returns the persisted URL path (e.g. "/user/images/mcp-client/mcp_xxx.png").
+ */
 async function uploadBase64ImageToSt(base64: string, mimeType: string): Promise<string> {
   const ext = (mimeType.split('/')[1] || 'png').toLowerCase();
   const filename = `mcp_${Date.now()}_${generateUniqueId()}`;
@@ -88,58 +91,19 @@ async function uploadBase64ImageToSt(base64: string, mimeType: string): Promise<
   return data.path as string;
 }
 
-async function renderToolImageToUi(payload: { serverId: string; toolName: string; data: string; mimeType: string }): Promise<void> {
-  const ctx = SillyTavern.getContext();
-  const ignore = ctx.symbols?.ignore;
-
-  const url = await uploadBase64ImageToSt(payload.data, payload.mimeType);
-
-  const extra: Record<PropertyKey, any> = {
-    isSmallSys: true,
-    inline_image: true,
-    media: [
-      {
-        type: 'image',
-        url,
-        title: `${payload.serverId}/${payload.toolName}`,
-        source: 'generated',
-      },
-    ],
-    // Persisted marker (symbol cannot be serialized)
-    mcp_client_ui_only: true,
-  };
-
-  if (ignore) {
-    extra[ignore] = true;
-  }
-
-  const regenerateHtml = `
-    <div style="margin-top: 5px;">
-      <button class="menu_button" onclick="window.mcpClientRegenerate(this)" style="font-size: 0.9em;">
-        <i class="fa-solid fa-arrows-rotate"></i> Regenerate
-      </button>
-    </div>
-  `;
-
-  ctx.sendSystemMessage('generic', regenerateHtml, extra);
-
-  // Fix shared-reference bug: SillyTavern's getSystemMessageByType does a
-  // shallow clone of the template, so all generic system messages end up
-  // sharing the SAME extra object. When a second image is generated, it
-  // overwrites the first image's media array on the shared reference.
-  // Deep-clone the extra on the newly pushed message to break the link.
-  const lastMsg = ctx.chat[ctx.chat.length - 1];
-  if (lastMsg?.extra) {
-    const cloned = JSON.parse(JSON.stringify(lastMsg.extra));
-    // Re-apply symbol property (not serializable by JSON)
-    if (ignore) {
-      cloned[ignore] = true;
-    }
-    lastMsg.extra = cloned;
-  }
-
-  // Persist to chat file so images survive reload
-  await ctx.saveChat();
+/**
+ * Image upload handler for ToolBridge.
+ * Uploads the image to the server and returns the URL.
+ * No system message is created — images are attached to
+ * the tool invocation message via TOOL_CALLS_PERFORMED event.
+ */
+async function uploadToolImage(payload: {
+  serverId: string;
+  toolName: string;
+  data: string;
+  mimeType: string;
+}): Promise<string> {
+  return await uploadBase64ImageToSt(payload.data, payload.mimeType);
 }
 
 function getJsonHeaders(): Record<string, string> {
@@ -179,7 +143,7 @@ async function probeBackend(): Promise<boolean> {
 async function initExtension() {
   const ctx = SillyTavern.getContext();
 
-  // Ensure UI-only messages are always excluded from generation.
+  // Backward compat: exclude old-style standalone image messages from generation.
   restoreUiOnlyIgnores(ctx);
 
   // 1. Check backend availability
@@ -204,7 +168,7 @@ async function initExtension() {
   };
 
   bridge = new ToolBridge(toolManager, fetcher, {
-    onUiImage: (img) => renderToolImageToUi(img),
+    onImageUpload: (img) => uploadToolImage(img),
   });
 
   // 3. Sync tools initially
@@ -215,7 +179,34 @@ async function initExtension() {
     console.error('[MCP Client] Failed to sync tools:', err);
   }
 
-  // 4. Hook into prompt pipeline for multimodal image injection
+  // 4. Hook TOOL_CALLS_PERFORMED to attach images to tool invocation message.
+  //    This fires after the tool invocation message is pushed to chat[] but
+  //    BEFORE addOneMessage() renders it and saveChatConditional() persists it.
+  //    So we can inject extra.media and it will be rendered + saved naturally.
+  ctx.eventSource.on(
+    ctx.event_types.TOOL_CALLS_PERFORMED,
+    () => {
+      if (!bridge) return;
+
+      const attachments = bridge.getPendingMediaAttachments();
+      if (attachments.length === 0) return;
+
+      // The tool invocation message was just pushed as the last chat entry
+      const lastMsg = ctx.chat[ctx.chat.length - 1];
+      if (!lastMsg?.extra || typeof lastMsg.extra !== 'object') return;
+
+      if (!Array.isArray(lastMsg.extra.media)) {
+        lastMsg.extra.media = [];
+      }
+      lastMsg.extra.media.push(...attachments);
+      lastMsg.extra.inline_image = true;
+
+      bridge.clearPendingMediaAttachments();
+      console.log(`[MCP Client] Attached ${attachments.length} image(s) to tool invocation message.`);
+    },
+  );
+
+  // 5. Hook into prompt pipeline for multimodal image injection
   ctx.eventSource.on(
     ctx.event_types.CHAT_COMPLETION_PROMPT_READY,
     (eventData: { chat: any[]; dryRun: boolean }) => {
@@ -234,7 +225,7 @@ async function initExtension() {
     },
   );
 
-  // 5. Register settings panel
+  // 6. Register settings panel
   registerSettingsPanel();
 
   console.log('[MCP Client] Extension initialized.');
@@ -572,24 +563,3 @@ async function updateToolList() {
   // Fallback: try immediately
   tryInit();
 })();
-
-// Register global regeneration handler
-window.mcpClientRegenerate = (btn: any) => {
-  const $ = (window as any).$;
-  const btnEl = $(btn);
-  const sysMesDiv = btnEl.closest('.mes');
-  const prevMesDiv = sysMesDiv.prev('.mes');
-
-  // Delete current (Image) message
-  sysMesDiv.find('.mes_edit_delete').trigger('click', { fromSlashCommand: true });
-
-  // If previous message is a tool call, delete it too and regenerate
-  if (prevMesDiv.length && prevMesDiv.hasClass('toolCall')) {
-    setTimeout(() => {
-      prevMesDiv.find('.mes_edit_delete').trigger('click', { fromSlashCommand: true });
-      setTimeout(() => {
-        $('#send_but').trigger('click');
-      }, 200);
-    }, 100);
-  }
-};

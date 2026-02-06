@@ -2,7 +2,7 @@
   "display_name": "MCP Client",
   "loading_order": 100,
   "js": "dist/index.iife.js",
-  "css": "dist/style.css",
+  "css": "style.css",
   "author": "Moeblack",
   "version": "0.1.0",
   "description": "Model Context Protocol client — connect to external MCP servers for AI tool use, resources, and prompts.",

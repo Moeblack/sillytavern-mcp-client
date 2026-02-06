@@ -2,13 +2,14 @@ import { defineConfig } from 'tsup';
 
 export default defineConfig({
   entry: ['server-plugin/src/index.ts'],
-  outDir: 'server-plugin/dist',
+  outDir: 'plugin',
+  dts: true,
   format: ['esm'],
   target: 'node18',
   platform: 'node',
   splitting: false,
   sourcemap: true,
-  clean: true,
+  clean: false, // plugin/ contains package.json that must persist
   // Bundle the MCP SDK into the output so we don't need subpath export resolution
   // Only externalize node built-ins and express (provided by SillyTavern)
   noExternal: [

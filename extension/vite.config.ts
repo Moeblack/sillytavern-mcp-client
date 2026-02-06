@@ -9,7 +9,7 @@ export default defineConfig({
       formats: ['iife'],
       fileName: () => 'index.iife.js',
     },
-    outDir: path.resolve(__dirname, 'dist'),
+    outDir: path.resolve(__dirname, '..', 'dist'),
     emptyOutDir: true,
     sourcemap: true,
     minify: false, // Keep readable for debugging

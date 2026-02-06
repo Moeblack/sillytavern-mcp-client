@@ -1,7 +1,8 @@
 node_modules/
-dist/
-server-plugin/dist/
-extension/dist/
 *.tsbuildinfo
 .vitest/
 coverage/
+
+# Old build output locations (no longer used — kept to avoid confusion)
+server-plugin/dist/
+extension/dist/

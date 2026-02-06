@@ -23,57 +23,59 @@
 1) **Server Plugin（后端）**：提供 `/api/plugins/mcp-client/**` 路由、管理 MCP server 连接
 2) **Third-party Extension（前端）**：在 UI 中提供面板、同步 tools、处理多模态策略
 
-### 方式 A：使用预构建包（推荐）
+### 方式 A：从 URL 安装（推荐）
 
-将发布包内的文件复制到 SillyTavern 对应目录（保持目录结构）：
+> 仓库中已包含预构建产物，可直接安装，无需本地构建。
 
-- `SillyTavern/plugins/mcp-client/`（后端插件）
-- `SillyTavern/public/scripts/extensions/third-party/mcp-client/`（前端扩展）
+**Step 1 — 安装前端扩展**
 
-复制完成后 **重启 SillyTavern**。
+在酒馆 UI 中：**Extensions → Install Extension** → 输入 Git URL：
+
+```
+https://github.com/Moeblack/sillytavern-mcp-client
+```
+
+酒馆会将本仓库 clone 到 `public/scripts/extensions/third-party/sillytavern-mcp-client/`，前端扩展立即可用。
+
+**Step 2 — 安装后端插件**
+
+后端 Server Plugin 需要在 SillyTavern 的 `plugins/` 目录中注册。在酒馆根目录执行一行命令即可：
+
+Linux / Mac：
+```bash
+# 软链接（推荐，后续 git pull 自动更新）
+ln -s ../public/scripts/extensions/third-party/sillytavern-mcp-client/plugin plugins/mcp-client
+```
+
+Windows (管理员 CMD)：
+```cmd
+mklink /D plugins\mcp-client public\scripts\extensions\third-party\sillytavern-mcp-client\plugin
+```
+
+或者任意平台直接复制：
+```bash
+cp -r public/scripts/extensions/third-party/sillytavern-mcp-client/plugin plugins/mcp-client
+```
+
+**Step 3 — 重启 SillyTavern**
+
+确保 `config.yaml` 中 `enableServerPlugins: true`，然后重启酒馆即可。
 
 ### 方式 B：从源码构建
 
-在本仓库根目录执行：
-
 ```bash
+git clone https://github.com/Moeblack/sillytavern-mcp-client.git
+cd sillytavern-mcp-client
 npm install
 npm run build
 ```
 
 构建产物位置：
 
-- 后端插件：`server-plugin/dist/index.js`、`server-plugin/dist/index.js.map`
-- 前端扩展：`extension/dist/index.iife.js`、`extension/dist/index.iife.js.map`
+- 前端扩展：`dist/index.iife.js`、`dist/index.iife.js.map`
+- 后端插件：`plugin/index.js`、`plugin/index.js.map`（`plugin/package.json` 已预置）
 
-然后复制到 SillyTavern：
-
-#### 1) 安装后端插件
-
-目标目录：`SillyTavern/plugins/mcp-client/`
-
-需要包含（至少）：
-
-- `package.json`（`main` 指向 `index.mjs`）
-- `index.mjs`（ESM wrapper，用于加载 `index.js`）
-- `index.js`、`index.js.map`（后端插件打包产物）
-
-> 说明：`index.mjs` 是一个 wrapper，用来兼容 bundler 产物对 `require` 的检查。
-
-#### 2) 安装前端扩展
-
-目标目录：`SillyTavern/public/scripts/extensions/third-party/mcp-client/`
-
-需要包含（至少）：
-
-- `manifest.json`
-- `dist/index.iife.js`
-- `dist/index.iife.js.map`
-- `dist/style.css`
-
-> 注意：`manifest.json` 中默认引用 `dist/style.css`，请确保 CSS 文件路径匹配。
-
-复制完成后 **重启 SillyTavern**。
+然后按方式 A 的 Step 1-3 安装（或手动复制文件到对应目录）。
 
 ---
 
@@ -189,7 +191,31 @@ npm run build
 npm install
 npm test
 npm run typecheck
-npm run build
+npm run build          # 构建前端 → dist/  +  后端 → plugin/
+```
+
+### 仓库结构
+
+```
+sillytavern-mcp-client/
+├── manifest.json            # 前端扩展 manifest（酒馆 URL 安装必须在根目录）
+├── style.css                # 前端样式
+├── dist/                    # 前端构建产物（已提交到仓库）
+│   ├── index.iife.js
+│   └── index.iife.js.map
+├── plugin/                  # 后端构建产物（已提交到仓库）
+│   ├── package.json         # Server Plugin 运行时 package.json
+│   ├── index.js
+│   └── index.js.map
+├── extension/               # 前端源码
+│   ├── src/
+│   └── vite.config.ts
+├── server-plugin/           # 后端源码
+│   ├── src/
+│   └── __tests__/
+├── shared/                  # 共享类型
+├── package.json             # 开发用 package.json
+└── tsup.config.ts           # 后端构建配置
 ```
 
 ---

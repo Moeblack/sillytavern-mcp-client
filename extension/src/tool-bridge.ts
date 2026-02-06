@@ -163,11 +163,15 @@ export class ToolBridge {
    * Processes MCP tool result content array.
    * - Text: collected as-is
    * - Image/Audio: replaced with placeholder, data stored for injection
+   *
+   * Image UI rendering is awaited sequentially so that each image is
+   * persisted to the chat file before processing the next one, avoiding
+   * race conditions with concurrent sendSystemMessage + saveChat calls.
    */
-  private _processToolResult(
+  private async _processToolResult(
     ctx: { serverId: string; toolName: string },
     content: ToolResultContent[],
-  ): string {
+  ): Promise<string> {
     const textParts: string[] = [];
 
     for (const item of content) {
@@ -183,21 +187,20 @@ export class ToolBridge {
             mimeType: img.mimeType,
           });
 
-          // UI render is best-effort and should not block tool execution.
           // Respect MCP audience annotations if present.
           const audience = img.annotations?.audience;
           const shouldShow = !Array.isArray(audience) || audience.length === 0 || audience.includes('user');
           if (shouldShow && this._onUiImage) {
-            void Promise.resolve(
-              this._onUiImage({
+            try {
+              await this._onUiImage({
                 serverId: ctx.serverId,
                 toolName: ctx.toolName,
                 data: img.data,
                 mimeType: img.mimeType,
-              }),
-            ).catch((err) => {
+              });
+            } catch (err) {
               console.warn('[MCP Client] Failed to render image in UI:', err);
-            });
+            }
           }
 
           textParts.push(`[Image: ${img.mimeType}, delivered to user]`);

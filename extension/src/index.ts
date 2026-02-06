@@ -28,6 +28,7 @@ declare const SillyTavern: {
     mainApi: string;
     getRequestHeaders(): Record<string, string>;
     sendSystemMessage(type: string, text?: string, extra?: Record<string, unknown>): void;
+    saveChat(): Promise<void>;
     chat: Array<{ mes: string; is_user: boolean; is_system: boolean; name: string; extra?: Record<PropertyKey, any> }>;
     symbols?: {
       ignore?: symbol;
@@ -121,6 +122,24 @@ async function renderToolImageToUi(payload: { serverId: string; toolName: string
   `;
 
   ctx.sendSystemMessage('generic', regenerateHtml, extra);
+
+  // Fix shared-reference bug: SillyTavern's getSystemMessageByType does a
+  // shallow clone of the template, so all generic system messages end up
+  // sharing the SAME extra object. When a second image is generated, it
+  // overwrites the first image's media array on the shared reference.
+  // Deep-clone the extra on the newly pushed message to break the link.
+  const lastMsg = ctx.chat[ctx.chat.length - 1];
+  if (lastMsg?.extra) {
+    const cloned = JSON.parse(JSON.stringify(lastMsg.extra));
+    // Re-apply symbol property (not serializable by JSON)
+    if (ignore) {
+      cloned[ignore] = true;
+    }
+    lastMsg.extra = cloned;
+  }
+
+  // Persist to chat file so images survive reload
+  await ctx.saveChat();
 }
 
 function getJsonHeaders(): Record<string, string> {

@@ -225,4 +225,4 @@ Tool Use Fix (合并显示 + 体验优化)
 
 ## License
 
-TBD
+AGPL-3.0

@@ -198,9 +198,9 @@ npm run build
 
 目前项目处于开发/测试阶段，已知存在以下问题：
 
-1. **多图渲染异常**：由于图片是通过系统工具调用插入的，在当前聊天会话渲染完成后，若退出并重新进入该聊天，所有图片可能会显示为同一张图。
-2. **图片删除联动失效**：删除聊天中的任意一张图片后，重新进入聊天会导致该会话内的所有图片消失。
-3. ~~**交互体验限制**~~：已通过 [Tool Use Fix](https://github.com/Moeblack/sillytavern-tooluse-fix) 扩展解决 — 支持 Swipe 代理、消息合并显示、编辑器可用。
+1. ~~**多图渲染异常**~~：已通过 [Tool Use Fix](https://github.com/Moeblack/sillytavern-tooluse-fix) 解决 — 图片 URL 持久化在 `extra.mcp_images` 中，basket 重建时正确渲染。
+2. ~~**图片删除联动失效**~~：已通过 Tool Use Fix 解决 — 图片由 basket 统一管理，不再依赖独立系统消息。
+3. ~~**交互体验限制**~~：已通过 Tool Use Fix 解决 — 消息合并显示、编辑器可用。
 
 ---
 

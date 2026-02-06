@@ -5,6 +5,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type {
   McpServerConfig,
   McpServerState,
@@ -255,7 +256,7 @@ export class McpManager {
       { capabilities: { roots: { listChanged: true } } },
     );
 
-    let transport: StdioClientTransport;
+    let transport: StdioClientTransport | StreamableHTTPClientTransport;
 
     if (config.transport.type === 'stdio') {
       transport = new StdioClientTransport({
@@ -265,9 +266,17 @@ export class McpManager {
         cwd: config.transport.cwd,
         stderr: 'pipe',
       });
+    } else if (config.transport.type === 'streamable-http') {
+      transport = new StreamableHTTPClientTransport(
+        new URL(config.transport.url),
+        {
+          requestInit: {
+            headers: config.transport.headers ?? {},
+          },
+        },
+      );
     } else {
-      // TODO: StreamableHTTP transport
-      throw new Error(`Transport type '${config.transport.type}' not yet supported. Use 'stdio'.`);
+      throw new Error(`Unsupported transport type: '${(config.transport as any).type}'.`);
     }
 
     return { client, transport };

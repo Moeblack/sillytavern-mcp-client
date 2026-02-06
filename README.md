@@ -200,8 +200,26 @@ npm run build
 
 1. **多图渲染异常**：由于图片是通过系统工具调用插入的，在当前聊天会话渲染完成后，若退出并重新进入该聊天，所有图片可能会显示为同一张图。
 2. **图片删除联动失效**：删除聊天中的任意一张图片后，重新进入聊天会导致该会话内的所有图片消失。
-3. **交互体验限制**：目前无法方便快捷地进行重 ROLL 操作（缺少对 `swipe_right` / `fa-solid fa-chevron-right` 等交互功能的快速支持）。
-4. **正在思考解决。**
+3. ~~**交互体验限制**~~：已通过 [Tool Use Fix](https://github.com/Moeblack/sillytavern-tooluse-fix) 扩展解决 — 支持 Swipe 代理、消息合并显示、编辑器可用。
+
+---
+
+## 相关项目
+
+| 项目 | 说明 |
+|------|------|
+| [ComfyUI-AnimaTool](https://github.com/Moeblack/ComfyUI-AnimaTool) | Anima 二次元图片生成 MCP Server + HTTP API，可通过本客户端连接到酒馆 |
+| [SillyTavern Tool Use Fix](https://github.com/Moeblack/sillytavern-tooluse-fix) | 酒馆工具调用体验修复扩展，将碎片化的工具调用消息合并为一条视觉消息 |
+
+### 推荐搭配
+
+```
+ComfyUI-AnimaTool (MCP Server)
+        ↕ MCP 协议 (stdio / streamable-http)
+SillyTavern MCP Client (本项目，连接 + 工具注册)
+        ↕ SillyTavern Tool Calling
+Tool Use Fix (合并显示 + 体验优化)
+```
 
 ---
 

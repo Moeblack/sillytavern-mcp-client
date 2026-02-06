@@ -1,12 +1,12 @@
 /**
  * Tool Bridge — bridges MCP tools to SillyTavern's ToolManager.
  *
- * Responsibilities:
+ * Pure protocol layer:
  * - Fetches tool list from backend plugin
  * - Registers/unregisters tools with ST ToolManager
  * - On tool invocation, calls backend and processes multimodal results
- * - Stores pending images for prompt injection by the multimodal handler
- * - Stores pending media attachments for injection into tool invocation messages
+ * - Uploads images to ST server, stores URLs for external consumption
+ * - Stores pending base64 images for multimodal prompt injection
  */
 
 import type {
@@ -36,24 +36,15 @@ export interface IToolManager {
 export type Fetcher = (url: string, opts?: RequestInit) => Promise<Response>;
 
 /**
- * Handler for uploading tool-generated images.
- * Receives base64 image data, uploads it to the server,
- * and returns the persisted URL for attachment to messages.
+ * Uploads a multimedia item to the server and returns the persisted URL.
+ * Called for each image/audio in tool results.
  */
-export type ImageUploadHandler = (payload: {
+export type MediaUploadHandler = (payload: {
   serverId: string;
   toolName: string;
   data: string;
   mimeType: string;
 }) => Promise<string>;
-
-/** Media attachment to be injected into a chat message's extra.media array. */
-export interface MediaAttachment {
-  type: string;
-  url: string;
-  title: string;
-  source: string;
-}
 
 // ============================================================
 // ToolBridge
@@ -65,29 +56,23 @@ export class ToolBridge {
   private _registeredNames = new Set<string>();
   /** Base64 image data pending injection into the AI prompt (multimodal). */
   private _pendingImages: PendingImage[] = [];
-  /** Uploaded media URLs pending attachment to the tool invocation message. */
-  private _pendingMediaAttachments: MediaAttachment[] = [];
-  private _onImageUpload?: ImageUploadHandler;
-  /** Maps registered ST tool name → { serverId, toolName } for call routing. */
+  /** Uploaded image URLs pending attachment to the tool invocation message. */
+  private _pendingImageUrls: string[] = [];
+  private _onMediaUpload?: MediaUploadHandler;
   private _toolMap = new Map<string, { serverId: string; toolName: string }>();
 
-  constructor(toolManager: IToolManager, fetcher: Fetcher, opts?: { onImageUpload?: ImageUploadHandler }) {
+  constructor(toolManager: IToolManager, fetcher: Fetcher, opts?: { onMediaUpload?: MediaUploadHandler }) {
     this._toolManager = toolManager;
     this._fetcher = fetcher;
-    this._onImageUpload = opts?.onImageUpload;
+    this._onMediaUpload = opts?.onMediaUpload;
   }
 
-  /** Testing helper to swap fetcher. */
   _setFetcher(fetcher: Fetcher): void {
     this._fetcher = fetcher;
   }
 
   // ---- Tool sync ----
 
-  /**
-   * Fetches the current tool list from the backend and syncs with ToolManager.
-   * New tools are registered, removed tools are unregistered.
-   */
   async syncTools(): Promise<void> {
     const resp = await this._fetcher('/api/plugins/mcp-client/tools/list', {
       method: 'POST',
@@ -104,13 +89,11 @@ export class ToolBridge {
       const stName = this._toStName(tool.serverId, tool.name);
       newNames.add(stName);
       newToolMap.set(stName, { serverId: tool.serverId, toolName: tool.name });
-
       if (!this._registeredNames.has(stName)) {
         this._registerTool(stName, tool);
       }
     }
 
-    // Unregister tools that are no longer present
     for (const oldName of this._registeredNames) {
       if (!newNames.has(oldName)) {
         this._toolManager.unregisterFunctionTool(oldName);
@@ -131,19 +114,18 @@ export class ToolBridge {
     this._pendingImages = [];
   }
 
-  // ---- Pending media attachments (for tool invocation message) ----
+  // ---- Pending image URLs (for tool invocation message attachment) ----
 
-  getPendingMediaAttachments(): MediaAttachment[] {
-    return [...this._pendingMediaAttachments];
+  getPendingImageUrls(): string[] {
+    return [...this._pendingImageUrls];
   }
 
-  clearPendingMediaAttachments(): void {
-    this._pendingMediaAttachments = [];
+  clearPendingImageUrls(): void {
+    this._pendingImageUrls = [];
   }
 
   // ---- Internal ----
 
-  /** Naming convention: mcp__serverId__toolName */
   private _toStName(serverId: string, toolName: string): string {
     return `mcp__${serverId}__${toolName}`;
   }
@@ -166,12 +148,6 @@ export class ToolBridge {
     });
   }
 
-  /**
-   * Called when ST invokes the tool. Calls backend, processes multimodal result.
-   * Returns a string for ST's ToolManager (text + image placeholders).
-   * Stores image data in pendingImages for later prompt injection,
-   * and uploaded URLs in pendingMediaAttachments for message attachment.
-   */
   private async _invokeToolAction(
     serverId: string,
     toolName: string,
@@ -183,18 +159,14 @@ export class ToolBridge {
       body: JSON.stringify({ serverId, toolName, arguments: args }),
     });
     const result = await resp.json() as ToolCallResponse;
-
     return this._processToolResult({ serverId, toolName }, result.content ?? []);
   }
 
   /**
    * Processes MCP tool result content array.
-   * - Text: collected as-is
-   * - Image: uploaded to server, URL stored for message attachment,
-   *          base64 data stored for multimodal prompt injection
-   * - Audio: placeholder text only (for now)
-   *
-   * Images are processed sequentially to ensure deterministic ordering.
+   * - text / resource / resource_link → returned as-is
+   * - image → uploaded to server, URL stored, placeholder in text
+   * - audio → placeholder in text
    */
   private async _processToolResult(
     ctx: { serverId: string; toolName: string },
@@ -210,31 +182,25 @@ export class ToolBridge {
         case 'image': {
           const img = item as ImageContent;
 
-          // Store base64 data for multimodal prompt injection
+          // Store base64 for multimodal prompt injection
           this._pendingImages.push({
             toolCallId: '',
             data: img.data,
             mimeType: img.mimeType,
           });
 
-          // Upload image and store URL for message attachment.
-          // Respect MCP audience annotations if present.
+          // Upload and store URL
           const audience = img.annotations?.audience;
-          const shouldShow = !Array.isArray(audience) || audience.length === 0 || audience.includes('user');
-          if (shouldShow && this._onImageUpload) {
+          const shouldUpload = !Array.isArray(audience) || audience.length === 0 || audience.includes('user');
+          if (shouldUpload && this._onMediaUpload) {
             try {
-              const url = await this._onImageUpload({
+              const url = await this._onMediaUpload({
                 serverId: ctx.serverId,
                 toolName: ctx.toolName,
                 data: img.data,
                 mimeType: img.mimeType,
               });
-              this._pendingMediaAttachments.push({
-                type: 'image',
-                url,
-                title: `${ctx.serverId}/${ctx.toolName}`,
-                source: 'generated',
-              });
+              this._pendingImageUrls.push(url);
             } catch (err) {
               console.warn('[MCP Client] Failed to upload image:', err);
             }

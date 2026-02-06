@@ -1,0 +1,6 @@
+refactor(mcp-client): 纯协议层，不碰 DOM/消息展示
+
+- tool-bridge: onMediaUpload 纯上传返回 URL，存入 _pendingImageUrls
+- index: TOOL_CALLS_PERFORMED 只写 extra.mcp_images 到 tool invocation 消息
+- 移除所有 DOM 操作、addOneMessage、display_text、消息合并代码
+- 展示层完全交给 tooluse-fix 插件处理

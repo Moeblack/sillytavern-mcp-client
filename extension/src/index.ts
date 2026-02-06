@@ -1,10 +1,12 @@
 /**
  * SillyTavern Extension entry point for MCP Client.
  *
+ * Pure protocol layer — no DOM manipulation, no message display logic.
+ *
  * Responsibilities:
  * 1. Probe backend plugin availability
  * 2. Register MCP tools with ST ToolManager
- * 3. Hook TOOL_CALLS_PERFORMED to attach images to tool invocation messages
+ * 3. Upload images to ST server, store URLs on tool invocation message
  * 4. Hook CHAT_COMPLETION_PROMPT_READY for multimodal image injection
  * 5. Register settings panel UI
  */
@@ -44,12 +46,11 @@ declare const SillyTavern: {
 // ============================================================
 
 let bridge: ToolBridge | null = null;
-let sendImages = false; // Default: DO NOT send images to model (compat-friendly)
+let sendImages = false;
 
 /**
  * Backward compatibility: mark old-style standalone image messages
- * (created by previous versions) as ignored so they don't pollute
- * the generation prompt.
+ * (created by previous versions) as ignored.
  */
 function restoreUiOnlyIgnores(ctx: ReturnType<typeof SillyTavern.getContext>): void {
   const ignore = ctx.symbols?.ignore;
@@ -68,10 +69,10 @@ function generateUniqueId(): string {
 }
 
 /**
- * Uploads a base64-encoded image to the SillyTavern server.
- * Returns the persisted URL path (e.g. "/user/images/mcp-client/mcp_xxx.png").
+ * Uploads a base64-encoded media file to the SillyTavern server.
+ * Returns the persisted URL path.
  */
-async function uploadBase64ImageToSt(base64: string, mimeType: string): Promise<string> {
+async function uploadMediaToSt(base64: string, mimeType: string): Promise<string> {
   const ext = (mimeType.split('/')[1] || 'png').toLowerCase();
   const filename = `mcp_${Date.now()}_${generateUniqueId()}`;
   const resp = await fetch('/api/images/upload', {
@@ -89,21 +90,6 @@ async function uploadBase64ImageToSt(base64: string, mimeType: string): Promise<
     throw new Error(data?.error || `${resp.status} ${resp.statusText}`);
   }
   return data.path as string;
-}
-
-/**
- * Image upload handler for ToolBridge.
- * Uploads the image to the server and returns the URL.
- * No system message is created — images are attached to
- * the tool invocation message via TOOL_CALLS_PERFORMED event.
- */
-async function uploadToolImage(payload: {
-  serverId: string;
-  toolName: string;
-  data: string;
-  mimeType: string;
-}): Promise<string> {
-  return await uploadBase64ImageToSt(payload.data, payload.mimeType);
 }
 
 function getJsonHeaders(): Record<string, string> {
@@ -143,7 +129,6 @@ async function probeBackend(): Promise<boolean> {
 async function initExtension() {
   const ctx = SillyTavern.getContext();
 
-  // Backward compat: exclude old-style standalone image messages from generation.
   restoreUiOnlyIgnores(ctx);
 
   // 1. Check backend availability
@@ -153,7 +138,7 @@ async function initExtension() {
     return;
   }
 
-  // 2. Create ToolBridge
+  // 2. Create ToolBridge (pure upload, no DOM)
   const toolManager = {
     registerFunctionTool: (opts: any) => ctx.ToolManager.registerFunctionTool(opts),
     unregisterFunctionTool: (name: string) => ctx.ToolManager.unregisterFunctionTool(name),
@@ -168,7 +153,9 @@ async function initExtension() {
   };
 
   bridge = new ToolBridge(toolManager, fetcher, {
-    onImageUpload: (img) => uploadToolImage(img),
+    onMediaUpload: async (payload) => {
+      return await uploadMediaToSt(payload.data, payload.mimeType);
+    },
   });
 
   // 3. Sync tools initially
@@ -179,30 +166,24 @@ async function initExtension() {
     console.error('[MCP Client] Failed to sync tools:', err);
   }
 
-  // 4. Hook TOOL_CALLS_PERFORMED to attach images to tool invocation message.
-  //    This fires after the tool invocation message is pushed to chat[] but
-  //    BEFORE addOneMessage() renders it and saveChatConditional() persists it.
-  //    So we can inject extra.media and it will be rendered + saved naturally.
+  // 4. TOOL_CALLS_PERFORMED: write pending image URLs to the tool invocation message.
+  //    This is the interface between MCP client (protocol) and tooluse-fix (UX).
+  //    MCP client writes extra.mcp_images, tooluse-fix reads it.
   ctx.eventSource.on(
     ctx.event_types.TOOL_CALLS_PERFORMED,
     () => {
       if (!bridge) return;
 
-      const attachments = bridge.getPendingMediaAttachments();
-      if (attachments.length === 0) return;
+      const urls = bridge.getPendingImageUrls();
+      if (urls.length === 0) return;
 
-      // The tool invocation message was just pushed as the last chat entry
       const lastMsg = ctx.chat[ctx.chat.length - 1];
       if (!lastMsg?.extra || typeof lastMsg.extra !== 'object') return;
 
-      if (!Array.isArray(lastMsg.extra.media)) {
-        lastMsg.extra.media = [];
-      }
-      lastMsg.extra.media.push(...attachments);
-      lastMsg.extra.inline_image = true;
+      lastMsg.extra.mcp_images = urls;
+      bridge.clearPendingImageUrls();
 
-      bridge.clearPendingMediaAttachments();
-      console.log(`[MCP Client] Attached ${attachments.length} image(s) to tool invocation message.`);
+      console.log(`[MCP Client] Stored ${urls.length} image URL(s) on tool invocation message.`);
     },
   );
 
@@ -333,10 +314,7 @@ async function refreshServersUI(): Promise<void> {
         if (!id) return;
         await fetchJson('/api/plugins/mcp-client/servers/connect', { id });
         await refreshServersUI();
-        if (bridge) {
-          await bridge.syncTools();
-          await updateToolList();
-        }
+        if (bridge) { await bridge.syncTools(); await updateToolList(); }
         await updateStatus();
       };
     });
@@ -346,10 +324,7 @@ async function refreshServersUI(): Promise<void> {
         if (!id) return;
         await fetchJson('/api/plugins/mcp-client/servers/disconnect', { id });
         await refreshServersUI();
-        if (bridge) {
-          await bridge.syncTools();
-          await updateToolList();
-        }
+        if (bridge) { await bridge.syncTools(); await updateToolList(); }
         await updateStatus();
       };
     });
@@ -360,10 +335,7 @@ async function refreshServersUI(): Promise<void> {
         await fetchJson('/api/plugins/mcp-client/servers/remove', { id });
         await removeServerFromConfig(id);
         await refreshServersUI();
-        if (bridge) {
-          await bridge.syncTools();
-          await updateToolList();
-        }
+        if (bridge) { await bridge.syncTools(); await updateToolList(); }
         await updateStatus();
       };
     });
@@ -379,7 +351,6 @@ async function refreshServersUI(): Promise<void> {
 function registerSettingsPanel() {
   try {
     const ctx = SillyTavern.getContext();
-    // Find the extensions settings container
     const container = document.getElementById('extensions_settings');
     if (!container) return;
 
@@ -421,67 +392,34 @@ function registerSettingsPanel() {
 
     container.insertAdjacentHTML('beforeend', panelHtml);
 
-    // Event listeners
     document.getElementById('mcp-send-images')?.addEventListener('change', (e) => {
       sendImages = (e.target as HTMLInputElement).checked;
     });
-
     document.getElementById('mcp-sync-tools')?.addEventListener('click', async () => {
-      if (bridge) {
-        await bridge.syncTools();
-        updateToolList();
-      }
+      if (bridge) { await bridge.syncTools(); updateToolList(); }
     });
-
     document.getElementById('mcp-open-config')?.addEventListener('click', async () => {
       const nextVisible = !isServerManagerVisible();
       setServerManagerVisible(nextVisible);
-      if (nextVisible) {
-        await refreshServersUI();
-      }
+      if (nextVisible) await refreshServersUI();
     });
-
     document.getElementById('mcp-servers-refresh')?.addEventListener('click', async () => {
       await refreshServersUI();
       await updateStatus();
     });
-
     document.getElementById('mcp-servers-add')?.addEventListener('click', async () => {
-      const example = {
-        id: 'my-server',
-        name: 'My MCP Server',
-        transport: {
-          type: 'stdio',
-          command: 'node',
-          args: ['path/to/server.js'],
-        },
-        enabled: true,
-        autoConnect: true,
-      };
-      const input = window.prompt('Paste MCP server config JSON (single server object):', JSON.stringify(example, null, 2));
+      const example = { id: 'my-server', name: 'My MCP Server', transport: { type: 'stdio', command: 'node', args: ['path/to/server.js'] }, enabled: true, autoConnect: true };
+      const input = window.prompt('Paste MCP server config JSON:', JSON.stringify(example, null, 2));
       if (!input) return;
       let cfg: any;
-      try {
-        cfg = JSON.parse(input);
-      } catch (e) {
-        window.alert(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`);
-        return;
-      }
+      try { cfg = JSON.parse(input); } catch (e) { window.alert(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`); return; }
       try {
         await fetchJson('/api/plugins/mcp-client/servers/add', cfg);
         await upsertServerInConfig(cfg);
-        if (cfg.autoConnect) {
-          await fetchJson('/api/plugins/mcp-client/servers/connect', { id: cfg.id });
-        }
-        await refreshServersUI();
-        await updateStatus();
-        if (bridge) {
-          await bridge.syncTools();
-          await updateToolList();
-        }
-      } catch (e) {
-        window.alert(`Failed to add server: ${e instanceof Error ? e.message : String(e)}`);
-      }
+        if (cfg.autoConnect) await fetchJson('/api/plugins/mcp-client/servers/connect', { id: cfg.id });
+        await refreshServersUI(); await updateStatus();
+        if (bridge) { await bridge.syncTools(); await updateToolList(); }
+      } catch (e) { window.alert(`Failed: ${e instanceof Error ? e.message : String(e)}`); }
     });
 
     updateStatus();
@@ -494,50 +432,27 @@ function registerSettingsPanel() {
 async function updateStatus() {
   const el = document.getElementById('mcp-status-text');
   if (!el) return;
-
   try {
-    const resp = await fetch('/api/plugins/mcp-client/servers/list', {
-      method: 'POST',
-      headers: getJsonHeaders(),
-      body: '{}',
-    });
+    const resp = await fetch('/api/plugins/mcp-client/servers/list', { method: 'POST', headers: getJsonHeaders(), body: '{}' });
     const data = await resp.json();
     const servers = data.servers ?? [];
     const connected = servers.filter((s: any) => s.status === 'connected').length;
     el.textContent = `${connected}/${servers.length} servers connected`;
-  } catch {
-    el.textContent = 'Backend unavailable';
-  }
+  } catch { el.textContent = 'Backend unavailable'; }
 }
 
 async function updateToolList() {
   const el = document.getElementById('mcp-tool-list');
   if (!el || !bridge) return;
-
   try {
-    const resp = await fetch('/api/plugins/mcp-client/tools/list', {
-      method: 'POST',
-      headers: getJsonHeaders(),
-      body: '{}',
-    });
+    const resp = await fetch('/api/plugins/mcp-client/tools/list', { method: 'POST', headers: getJsonHeaders(), body: '{}' });
     const data = await resp.json();
     const tools = data.tools ?? [];
-
-    if (tools.length === 0) {
-      el.innerHTML = '<div class="mcp-empty">No MCP tools registered</div>';
-      return;
-    }
-
+    if (tools.length === 0) { el.innerHTML = '<div class="mcp-empty">No MCP tools registered</div>'; return; }
     el.innerHTML = tools.map((t: any) =>
-      `<div class="mcp-tool-item">
-        <code>${t.name}</code>
-        <small class="mcp-muted">${t.serverId}</small>
-        <div class="mcp-tool-desc">${t.description ?? ''}</div>
-      </div>`,
+      `<div class="mcp-tool-item"><code>${t.name}</code> <small class="mcp-muted">${t.serverId}</small><div class="mcp-tool-desc">${t.description ?? ''}</div></div>`
     ).join('');
-  } catch {
-    el.innerHTML = '<div class="mcp-empty">Failed to load tools</div>';
-  }
+  } catch { el.innerHTML = '<div class="mcp-empty">Failed to load tools</div>'; }
 }
 
 // ============================================================
@@ -547,19 +462,13 @@ async function updateToolList() {
 (async () => {
   const ctx = SillyTavern?.getContext?.();
   if (!ctx) return;
-
   const { eventSource, event_types } = ctx;
-
   let initialized = false;
-
   const tryInit = async () => {
     if (initialized) return;
     initialized = true;
     await initExtension();
   };
-
   eventSource.on(event_types.APP_READY, tryInit);
-
-  // Fallback: try immediately
   tryInit();
 })();

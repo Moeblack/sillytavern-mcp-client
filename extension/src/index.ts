@@ -55,9 +55,21 @@ function restoreUiOnlyIgnores(ctx: ReturnType<typeof SillyTavern.getContext>): v
   }
 }
 
+declare global {
+  interface Window {
+    mcpClientRegenerate?: (btn: any) => void;
+  }
+}
+
+function generateUniqueId(): string {
+  return typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : Math.random().toString(36).substring(2);
+}
+
 async function uploadBase64ImageToSt(base64: string, mimeType: string): Promise<string> {
   const ext = (mimeType.split('/')[1] || 'png').toLowerCase();
-  const filename = `mcp_${Date.now()}`;
+  const filename = `mcp_${Date.now()}_${generateUniqueId()}`;
   const resp = await fetch('/api/images/upload', {
     method: 'POST',
     headers: getJsonHeaders(),
@@ -100,7 +112,15 @@ async function renderToolImageToUi(payload: { serverId: string; toolName: string
     extra[ignore] = true;
   }
 
-  ctx.sendSystemMessage('generic', '', extra);
+  const regenerateHtml = `
+    <div style="margin-top: 5px;">
+      <button class="menu_button" onclick="window.mcpClientRegenerate(this)" style="font-size: 0.9em;">
+        <i class="fa-solid fa-arrows-rotate"></i> Regenerate
+      </button>
+    </div>
+  `;
+
+  ctx.sendSystemMessage('generic', regenerateHtml, extra);
 }
 
 function getJsonHeaders(): Record<string, string> {
@@ -533,3 +553,24 @@ async function updateToolList() {
   // Fallback: try immediately
   tryInit();
 })();
+
+// Register global regeneration handler
+window.mcpClientRegenerate = (btn: any) => {
+  const $ = (window as any).$;
+  const btnEl = $(btn);
+  const sysMesDiv = btnEl.closest('.mes');
+  const prevMesDiv = sysMesDiv.prev('.mes');
+
+  // Delete current (Image) message
+  sysMesDiv.find('.mes_edit_delete').trigger('click', { fromSlashCommand: true });
+
+  // If previous message is a tool call, delete it too and regenerate
+  if (prevMesDiv.length && prevMesDiv.hasClass('toolCall')) {
+    setTimeout(() => {
+      prevMesDiv.find('.mes_edit_delete').trigger('click', { fromSlashCommand: true });
+      setTimeout(() => {
+        $('#send_but').trigger('click');
+      }, 200);
+    }, 100);
+  }
+};

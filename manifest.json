@@ -5,6 +5,6 @@
   "css": "style.css",
   "author": "Moeblack",
   "version": "0.1.0",
-  "description": "Model Context Protocol client — connect to external MCP servers for AI tool use, resources, and prompts.",
+  "description": "Model Context Protocol client — connect to external MCP servers for AI tool use, resources, and prompts. Dev tool-use mode depends on st-api-wrapper.",
   "homePage": "https://github.com/Moeblack/sillytavern-mcp-client"
 }

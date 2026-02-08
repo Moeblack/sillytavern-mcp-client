@@ -1,18 +1,26 @@
 # SillyTavern MCP Client
 
-在 SillyTavern 中接入 **Model Context Protocol (MCP)**：连接外部 MCP Server，向模型提供 Tools / Resources / Prompts，并支持（可选）多模态图片注入。
+在 SillyTavern 中接入 **Model Context Protocol (MCP)**：连接外部 MCP Server，为模型提供 Tools / Resources / Prompts。
+
+本分支（dev）引入 **无碎片 Tool Use** 架构：
+
+- 通过 **st-api-wrapper** 接管发送/再生入口（不走 ST 原生 Generate 工具循环）
+- 使用模型的 **原生 tool_calls / function calling**（OpenAI `tools[]` 格式）
+- MCP 工具在后端 server-plugin 执行，但 **聊天只落一条最终 assistant 消息**
+- 工具调用过程以 `extra.mcp_tool_trace` 形式保存，并在 UI 中渲染为可折叠 Trace
 
 > 设计目标（重要）：**默认不把图片内容发送给模型**。
-> - UI 会把工具返回的图片**自动渲染为一条系统消息**（每张图一条）。
-> - 发送给模型的只有占位提示：`[Image: image/png, delivered to user]`。
-> - 如需让支持多模态的模型“看图”，可以在面板里勾选 `Send images to model`。
+> - UI：Trace 中展示图片链接（自动上传到 ST）
+> - 模型：默认只看到占位提示：`[Image: image/png, delivered to user]`
 
 ---
 
 ## 兼容性 / 前置条件
 
 - 需要较新的 SillyTavern 版本（具备 Server Plugins + Third-party Extensions + Tool Calling 功能）。
-- 你的模型/后端需要支持 Tool Calling（OpenAI/Claude/OpenRouter 等）；否则只能手动调用或不会触发工具。
+- **必须安装并启用**第三方扩展 [st-api-wrapper](https://github.com/Lianues/st-api-wrapper)（本项目 dev 架构依赖它来拦截入口与构造请求）。
+- 当前 dev 架构**只支持 `mainApi=openai` 的 chat-completions 体系**（包括 OpenAI / OpenRouter / Claude / Gemini 等 *chat_completion_source*）。
+- 你的模型/后端需要支持 Tool Calling（function calling）；否则不会触发工具。
 
 ---
 
@@ -27,7 +35,17 @@
 
 > 仓库中已包含预构建产物，可直接安装，无需本地构建。
 
-**Step 1 — 安装前端扩展**
+**Step 0 — 安装 st-api-wrapper（必须）**
+
+在酒馆 UI 中：**Extensions → Install Extension** → 输入 Git URL：
+
+```
+https://github.com/Lianues/st-api-wrapper
+```
+
+启用后刷新一次页面，确保 `window.ST_API` 可用。
+
+**Step 1 — 安装前端扩展（本项目）**
 
 在酒馆 UI 中：**Extensions → Install Extension** → 输入 Git URL：
 
@@ -86,10 +104,18 @@ npm run build
 3. 点击 **Manage Servers** 添加/管理 MCP servers
 4. 点击 **Sync Tools** 同步工具列表
 
-当模型支持 Tool Calling 且工具已注册后：
-- 模型会按需自动调用 MCP tools
-- 你也可以提示模型显式调用：
-  - “先调用 `list_xxx`，再调用 `generate_xxx` ……”
+当满足以下条件后：
+- `mainApi=openai`
+- 你使用的是 chat-completions 类模型/渠道（OpenAI / OpenRouter / Claude / Gemini 等 source）
+- 工具已 Sync
+
+你在聊天界面点击 **发送 / 再生** 时，扩展会：
+1) 拦截酒馆原生生成入口
+2) 以 OpenAI `tools[]` 发起请求
+3) 在扩展内部执行 tool loop（MCP 工具由后端插件执行）
+4) 最终只写入 **一条 assistant** 回复
+
+工具调用过程会显示在回复下方的可折叠 **MCP Tools Trace** 中（同时持久化在 `extra.mcp_tool_trace`）。
 
 ---
 
@@ -162,10 +188,10 @@ npm run build
 ## 图片渲染与“不给模型看图”的策略
 
 - 工具返回 `type: "image"` 时：
-  - UI：自动发一条 **系统消息**并渲染图片（每张图一条）
+  - UI：会自动上传到 SillyTavern，并在 **MCP Tools Trace** 中显示链接
   - 模型：默认不发送图片数据，只保留占位符文本
-- 如需把图片发给模型（仅对支持多模态的 provider 有效）：
-  - 在 MCP Client 面板勾选 `Send images to model (provider-aware)`
+
+> Phase 2 计划：可选把图片以 provider 兼容的方式注入到下一轮 prompt（当前 dev 实现默认关闭）。
 
 ---
 
@@ -224,9 +250,9 @@ sillytavern-mcp-client/
 
 目前项目处于开发/测试阶段，已知存在以下问题：
 
-1. ~~**多图渲染异常**~~：已通过 [Tool Use Fix](https://github.com/Moeblack/sillytavern-tooluse-fix) 解决 — 图片 URL 持久化在 `extra.mcp_images` 中，basket 重建时正确渲染。
-2. ~~**图片删除联动失效**~~：已通过 Tool Use Fix 解决 — 图片由 basket 统一管理，不再依赖独立系统消息。
-3. ~~**交互体验限制**~~：已通过 Tool Use Fix 解决 — 消息合并显示、编辑器可用。
+1. 当前 dev 架构只实现了 **send / regenerate** 拦截；`continue / stop / impersonate` 等入口尚未完整接管。
+2. 当前 dev 架构以 `mainApi=openai` 为前提；其它主 API（如 novel/textgen）暂不支持原生 tool_calls。
+3. 流式 tool loop 仍在规划中（Phase 1 默认非流式）。
 
 ---
 
@@ -235,16 +261,17 @@ sillytavern-mcp-client/
 | 项目 | 说明 |
 |------|------|
 | [ComfyUI-AnimaTool](https://github.com/Moeblack/ComfyUI-AnimaTool) | Anima 二次元图片生成 MCP Server + HTTP API，可通过本客户端连接到酒馆 |
-| [SillyTavern Tool Use Fix](https://github.com/Moeblack/sillytavern-tooluse-fix) | 酒馆工具调用体验修复扩展，将碎片化的工具调用消息合并为一条视觉消息 |
+| [st-api-wrapper](https://github.com/Lianues/st-api-wrapper) | 本项目 dev 架构的基础设施依赖：hooks 拦截 + prompt 构造 + UI API |
+| [SillyTavern Tool Use Fix](https://github.com/Moeblack/sillytavern-tooluse-fix) | **已不再需要**（旧方案为修复碎片消息的视觉合并 hack）。建议关闭/卸载，避免与新架构概念混淆 |
 
 ### 推荐搭配
 
 ```
 ComfyUI-AnimaTool (MCP Server)
         ↕ MCP 协议 (stdio / streamable-http)
-SillyTavern MCP Client (本项目，连接 + 工具注册)
-        ↕ SillyTavern Tool Calling
-Tool Use Fix (合并显示 + 体验优化)
+SillyTavern MCP Client (本项目：连接 + tool loop + trace)
+        ↕
+st-api-wrapper (hooks / prompt utilities)
 ```
 
 ---

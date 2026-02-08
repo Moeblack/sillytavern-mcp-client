@@ -56,7 +56,7 @@ interface ServerEntry {
   status: ConnectionStatus;
   error?: string;
   client?: IMcpClient;
-  transport?: StdioClientTransport;
+  transport?: StdioClientTransport | StreamableHTTPClientTransport;
   capabilities?: ServerCapabilities;
   tools: McpToolDefinition[];
   resources: McpResource[];

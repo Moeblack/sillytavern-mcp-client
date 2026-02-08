@@ -32,3 +32,26 @@ export interface PendingImage {
   data: string; // base64
   mimeType: string;
 }
+
+/**
+ * Tool trace stored on the final assistant message as `extra.mcp_tool_trace`.
+ * This is UI-only metadata and should not be sent back to the model.
+ */
+export interface McpToolTraceEntry {
+  toolCallId: string;
+  qualifiedName: string;
+  serverId: string;
+  toolName: string;
+  arguments: Record<string, unknown> | unknown;
+  isError: boolean;
+  resultText: string;
+  /** Optional UI image URLs uploaded to ST server. */
+  images?: Array<{ url: string; mimeType: string }>;
+  durationMs?: number;
+}
+
+export interface McpToolTrace {
+  version: 1;
+  iterations: number;
+  tools: McpToolTraceEntry[];
+}
